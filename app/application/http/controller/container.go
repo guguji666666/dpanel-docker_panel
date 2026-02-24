@@ -29,7 +29,9 @@ import (
 	"github.com/donknap/dpanel/common/types/define"
 	"github.com/donknap/dpanel/common/types/event"
 	"github.com/gin-gonic/gin"
+	"github.com/mholt/archives"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/patrickmn/go-cache"
 	"github.com/we7coreteam/w7-rangine-go/v2/pkg/support/facade"
 	"github.com/we7coreteam/w7-rangine-go/v2/src/http/controller"
 	"gorm.io/datatypes"
@@ -202,7 +204,7 @@ func (self Container) GetDetail(http *gin.Context) {
 		return
 	}
 	dpanelInfo := logic2.Setting{}.GetDPanelInfo()
-	if dpanelInfo.ContainerInfo.ContainerJSONBase != nil && dpanelInfo.ContainerInfo.Name == detail.Name {
+	if docker.Sdk.DockerEnv.Default && dpanelInfo.ContainerInfo.ContainerJSONBase != nil && dpanelInfo.ContainerInfo.Name == detail.Name {
 		detail.Config.Labels[define.DPanelLabelContainerDPanelSelf] = "true"
 	}
 	ignore := accessor.ContainerCheckIgnoreUpgrade{}
@@ -468,16 +470,14 @@ func (self Container) Delete(http *gin.Context) {
 
 func (self Container) Export(http *gin.Context) {
 	type ParamsValidate struct {
-		Md5                string `json:"md5"`
-		EnableExportToPath bool   `json:"enableExportToPath"`
+		Md5                  string `json:"md5"`
+		EnableExportToPath   bool   `json:"enableExportToPath"`
+		EnableExportCompress bool   `json:"enableExportCompress"`
 	}
 	params := ParamsValidate{}
 	if !self.Validate(http, &params) {
 		return
 	}
-	params.Md5 = http.Query("md5")
-	params.EnableExportToPath = http.Query("enableExportToPath") == "true"
-
 	containerInfo, err := docker.Sdk.Client.ContainerInspect(docker.Sdk.Ctx, params.Md5)
 	if err != nil {
 		self.JsonResponseWithError(http, err, 500)
@@ -492,28 +492,51 @@ func (self Container) Export(http *gin.Context) {
 		_ = out.Close()
 	}()
 	fileName := strings.Trim(containerInfo.Name, "/") + "-" + time.Now().Format(define.DateYmdHis) + ".tar"
-	if params.EnableExportToPath {
-		file, err := storage.Local{}.CreateSaveFile("export/container/" + fileName)
+	if params.EnableExportCompress {
+		fileName += ".zst"
+	}
+	exportSaveFile, err := storage.Local{}.CreateSaveFile("export/container/" + fileName)
+	if err != nil {
+		self.JsonResponseWithError(http, err, 500)
+		return
+	}
+	defer func() {
+		_ = exportSaveFile.Close()
+	}()
+	if params.EnableExportCompress {
+		compression := archives.Zstd{}
+		cw, err := compression.OpenWriter(exportSaveFile)
 		if err != nil {
 			self.JsonResponseWithError(http, err, 500)
 			return
 		}
 		defer func() {
-			_ = file.Close()
+			_ = cw.Close()
 		}()
-		_, err = io.Copy(file, out)
+		_, err = io.Copy(cw, out)
+	} else {
+		_, err = io.Copy(exportSaveFile, out)
 		if err != nil {
 			self.JsonResponseWithError(http, err, 500)
 			return
 		}
-		_ = notice.Message{}.Info(define.InfoMessageCommonExportInPath, "path", file.Name())
-	} else {
-		http.Header("Content-Type", "application/tar")
-		http.Header("Content-Disposition", "attachment; filename="+fileName)
-		http.DataFromReader(200, -1, "application/tar", out, nil)
 	}
-	self.JsonSuccessResponse(http)
-	return
+
+	if params.EnableExportToPath {
+		self.JsonResponseWithoutError(http, gin.H{
+			"saveUrl": exportSaveFile.Name(),
+		})
+		return
+	}
+	downloadUrl, err := logic2.Attach{}.PreDownload(exportSaveFile.Name(), cache.DefaultExpiration)
+	if err != nil {
+		self.JsonResponseWithError(http, err, 500)
+		return
+	}
+	self.JsonResponseWithoutError(http, gin.H{
+		"saveUrl":     exportSaveFile.Name(),
+		"downloadUrl": downloadUrl,
+	})
 }
 
 func (self Container) Commit(http *gin.Context) {

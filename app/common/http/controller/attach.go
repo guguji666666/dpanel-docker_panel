@@ -2,10 +2,12 @@ package controller
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 
+	"github.com/donknap/dpanel/app/common/logic"
 	"github.com/donknap/dpanel/common/function"
 	"github.com/donknap/dpanel/common/service/storage"
 	"github.com/donknap/dpanel/common/types/define"
@@ -86,5 +88,32 @@ func (self Attach) Delete(http *gin.Context) {
 		return
 	}
 	self.JsonSuccessResponse(http)
+	return
+}
+
+func (self Attach) Download(http *gin.Context) {
+	type ParamsValidate struct {
+		Id          string `json:"id"`
+		ContentType string `json:"contentType"`
+	}
+	params := ParamsValidate{}
+	if !self.Validate(http, &params) {
+		return
+	}
+	params.Id = http.Query("id")
+
+	cacheKey := fmt.Sprintf(storage.CacheKeyAttach, params.Id)
+	val, ok := storage.Cache.Get(cacheKey)
+	if !ok {
+		self.JsonResponseWithError(http, function.ErrorMessage(define.ErrorMessageCommonDataNotFoundOrDeleted), 404)
+		return
+	}
+
+	task, ok := val.(*logic.AttachDownloadTask)
+	if !ok {
+		self.JsonResponseWithError(http, function.ErrorMessage(define.ErrorMessageCommonDataNotFoundOrDeleted), 500)
+		return
+	}
+	http.FileAttachment(task.FilePath, filepath.Base(task.FilePath))
 	return
 }

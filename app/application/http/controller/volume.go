@@ -9,6 +9,8 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/go-units"
+	"github.com/donknap/dpanel/app/common/logic"
+	"github.com/donknap/dpanel/common/accessor"
 	"github.com/donknap/dpanel/common/service/docker"
 	"github.com/donknap/dpanel/common/service/notice"
 	"github.com/gin-gonic/gin"
@@ -64,14 +66,21 @@ func (self Volume) GetList(http *gin.Context) {
 			}
 		}
 	}
+	diskUsage := accessor.DiskUsage{}
+	logic.Setting{}.GetByKey(logic.SettingGroupSetting, logic.SettingGroupSettingDiskUsage, &diskUsage)
+	volumeDiskUsage := make([]*volume.Volume, 0)
+	if diskUsage.Usage != nil && diskUsage.Usage.Volumes != nil {
+		volumeDiskUsage = diskUsage.Usage.Volumes
+	}
 
 	sort.Slice(volumeList.Volumes, func(i, j int) bool {
 		return volumeList.Volumes[i].CreatedAt > volumeList.Volumes[j].CreatedAt
 	})
 	self.JsonResponseWithoutError(http, gin.H{
-		"list":    volumeList.Volumes,
-		"warning": volumeList.Warnings,
-		"inUse":   inUseVolume,
+		"list":      volumeList.Volumes,
+		"warning":   volumeList.Warnings,
+		"inUse":     inUseVolume,
+		"diskUsage": volumeDiskUsage,
 	})
 	return
 }

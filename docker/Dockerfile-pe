@@ -2,36 +2,51 @@
 
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS source
 
-ARG DP_VERSION
-ENV DP_VERSION=${DP_VERSION:-master}
+ARG HTTP_PROXY
 ENV HTTP_PROXY=${HTTP_PROXY}
 ENV HTTPS_PROXY=${HTTP_PROXY}
 
-WORKDIR /src
-
 RUN apk add --no-cache git github-cli gcc musl-dev make
 
+ARG APP_VERSION
+ARG REPO_BRANCH
+ARG REPO_PULL
+
+ENV APP_VERSION=${APP_VERSION}
+ENV REPO_BRANCH=${REPO_BRANCH:-master}
+ENV REPO_PULL=${REPO_PULL:-false}
+
+WORKDIR /src
+
+COPY . .
+
 RUN --mount=type=secret,id=GIT_TOKEN \
-    export GH_TOKEN=$(cat /run/secrets/GIT_TOKEN) && \
-    gh repo clone donknap/dpanel . -- -b ${DP_VERSION} --depth 1 && \
-    rm -rf ./app/pro && \
-    gh repo clone donknap/dpanel-pro ./app/pro -- --depth 1 && \
+    if [ "$REPO_PULL" = "true" ] || [ "$REPO_PULL" = "1" ]; then \
+        echo ">> REPO_PULL enabled. Clearing local files and pulling from remote..." && \
+        rm -rf ./* ./.[!.]* 2>/dev/null || true && \
+        export GH_TOKEN=$(cat /run/secrets/GIT_TOKEN) && \
+        gh repo clone donknap/dpanel . -- -b ${REPO_BRANCH} --depth 1 && \
+        rm -rf ./app/pro && \
+        gh repo clone donknap/dpanel-pro ./app/pro -- --depth 1; \
+    else \
+        echo ">> REPO_PULL disabled. Using local source code..." ; \
+    fi && \
     go test -v --run TestGenerateDefines ./app/pro/tests/obfuscate_test.go
 
 FROM golang:1.25-alpine AS builder
 
-ARG DP_VERSION
-ARG TARGETARCH
 ARG HTTP_PROXY
-
-ENV DP_VERSION=${DP_VERSION:-master}
 ENV HTTP_PROXY=${HTTP_PROXY}
 ENV HTTPS_PROXY=${HTTP_PROXY}
 
-WORKDIR /src
-
 RUN apk add --no-cache make gcc musl-dev git && \
     go install mvdan.cc/garble@latest
+
+ARG APP_VERSION
+ARG TARGETARCH
+ENV APP_VERSION=${APP_VERSION}
+
+WORKDIR /src
 
 COPY --from=source /src /src
 
@@ -40,9 +55,9 @@ RUN --mount=type=secret,id=GARBLE_SEED \
     --mount=type=cache,target=/go/pkg/mod,id=dpanel_mod_cache_${TARGETARCH} \
     export SEED=$(cat /run/secrets/GARBLE_SEED) && \
     if [ "$TARGETARCH" = "amd64" ]; then \
-        make build VERSION=${DP_VERSION} FAMILY=pe OS=linux AMD64=1 AMD64_CC=gcc GARBLE=1 GARBLE_SEED=${SEED}; \
+        make build VERSION=${APP_VERSION} FAMILY=pe OS=linux AMD64=1 AMD64_CC=gcc GARBLE=1 GARBLE_SEED=${SEED}; \
     elif [ "$TARGETARCH" = "arm64" ]; then \
-        make build VERSION=${DP_VERSION} FAMILY=pe OS=linux ARM64=1 ARM64_CC=gcc GARBLE=1 GARBLE_SEED=${SEED}; \
+        make build VERSION=${APP_VERSION} FAMILY=pe OS=linux ARM64=1 ARM64_CC=gcc GARBLE=1 GARBLE_SEED=${SEED}; \
     else \
         echo "Unsupported architecture: $TARGETARCH" && exit 1; \
     fi

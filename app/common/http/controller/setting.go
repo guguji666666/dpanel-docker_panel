@@ -83,9 +83,23 @@ func (self Setting) GetSetting(http *gin.Context) {
 		return
 	}
 	refValue := reflect.ValueOf(row.Value).Elem()
-	name := strings.ToUpper(string(params.Name[0])) + params.Name[1:]
-	if refValue.FieldByName(name).IsValid() {
-		self.JsonResponseWithoutError(http, refValue.FieldByName(name).Interface())
+	refType := refValue.Type()
+
+	var foundValue interface{}
+	found := false
+
+	for i := 0; i < refValue.NumField(); i++ {
+		field := refType.Field(i)
+		jsonTag := field.Tag.Get("json")
+		tagValue := strings.Split(jsonTag, ",")[0]
+		if tagValue == params.Name {
+			foundValue = refValue.Field(i).Interface()
+			found = true
+			break
+		}
+	}
+	if found {
+		self.JsonResponseWithoutError(http, foundValue)
 	} else {
 		self.JsonResponseWithoutError(http, gin.H{})
 	}

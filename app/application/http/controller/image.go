@@ -3,6 +3,7 @@ package controller
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"log/slog"
 	http2 "net/http"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,6 +22,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/go-units"
 	"github.com/donknap/dpanel/app/application/logic"
+	logic2 "github.com/donknap/dpanel/app/common/logic"
 	"github.com/donknap/dpanel/common/function"
 	"github.com/donknap/dpanel/common/service/docker"
 	"github.com/donknap/dpanel/common/service/docker/types"
@@ -28,6 +32,7 @@ import (
 	"github.com/donknap/dpanel/common/service/ws"
 	"github.com/donknap/dpanel/common/types/define"
 	"github.com/gin-gonic/gin"
+	"github.com/patrickmn/go-cache"
 	"github.com/we7coreteam/w7-rangine-go/v2/src/http/controller"
 )
 
@@ -439,50 +444,59 @@ func (self Image) Prune(http *gin.Context) {
 func (self Image) Export(http *gin.Context) {
 	type ParamsValidate struct {
 		Md5                []string `json:"md5" binding:"required"`
-		EnableExportToPath bool     `json:"enableExportToPath"`
+		EnableExportToPath bool     `json:"enableExportToPath"` // 开启后只存储到服务路径，不通过浏览器下载
 	}
 	params := ParamsValidate{}
 	if !self.Validate(http, &params) {
 		return
 	}
-	out, err := docker.Sdk.Client.ImageSave(docker.Sdk.Ctx, params.Md5)
+
+	sort.Strings(params.Md5)
+	fileName := fmt.Sprintf("%s-%s.tar", strings.Join(function.PluckArrayWalk(params.Md5, func(i string) (string, bool) {
+		imageDetail := function.ImageTag(i)
+		return strings.ReplaceAll(imageDetail.ImageName, "-", "_"), true
+	}), "-"), time.Now().Format(define.DateYmdHis))
+
+	ctx, cancel := context.WithCancel(docker.Sdk.Ctx)
+	defer cancel()
+
+	out, err := docker.Sdk.Client.ImageSave(ctx, params.Md5)
+	if err != nil {
+		self.JsonResponseWithError(http, err, 500)
+		return
+	}
+
+	exportSaveFile, err := storage.Local{}.CreateSaveFile(filepath.Join("export", "image", fileName))
 	if err != nil {
 		self.JsonResponseWithError(http, err, 500)
 		return
 	}
 	defer func() {
-		err = out.Close()
-		if err != nil {
-			slog.Debug("image export close", "error", err)
-		}
+		_ = exportSaveFile.Close()
 	}()
 
-	names := function.PluckArrayWalk(params.Md5, func(i string) (string, bool) {
-		imageDetail := function.ImageTag(i)
-		return strings.ReplaceAll(strings.ReplaceAll(imageDetail.BaseName, "-", "_"), "/", "_"), true
-	})
-	fileName := fmt.Sprintf("export/image/%s-%s.tar", strings.Join(names, "-"), time.Now().Format(define.DateYmdHis))
-	if params.EnableExportToPath {
-		file, err := storage.Local{}.CreateSaveFile(fileName)
-		if err != nil {
-			self.JsonResponseWithError(http, err, 500)
-			return
-		}
-		defer func() {
-			_ = file.Close()
-		}()
-		_, err = io.Copy(file, out)
-		if err != nil {
-			self.JsonResponseWithError(http, err, 500)
-			return
-		}
-		_ = notice.Message{}.Info(define.InfoMessageCommonExportInPath, "path", file.Name())
-	} else {
-		http.Header("Content-Type", "application/tar")
-		http.Header("Content-Disposition", "attachment; filename="+fileName)
-		http.DataFromReader(200, -1, "application/tar", out, nil)
+	_, err = io.Copy(exportSaveFile, out)
+	if err != nil {
+		self.JsonResponseWithError(http, err, 500)
+		return
 	}
-	self.JsonSuccessResponse(http)
+
+	if params.EnableExportToPath {
+		self.JsonResponseWithoutError(http, gin.H{
+			"saveUrl": exportSaveFile.Name(),
+		})
+		return
+	}
+
+	downloadUrl, err := logic2.Attach{}.PreDownload(exportSaveFile.Name(), cache.DefaultExpiration)
+	if err != nil {
+		self.JsonResponseWithError(http, err, 500)
+		return
+	}
+	self.JsonResponseWithoutError(http, gin.H{
+		"saveUrl":     exportSaveFile.Name(),
+		"downloadUrl": downloadUrl,
+	})
 	return
 }
 

@@ -23,6 +23,7 @@ var (
 	// CacheKeyDockerEventJob        = "docker:event:%s:%s"
 	CacheKeyRsaKey = "rsa:key"
 	CacheKeyRsaPub = "rsa:pub"
+	CacheKeyAttach = "attach:%s"
 )
 
 var (

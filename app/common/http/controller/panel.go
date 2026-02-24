@@ -1,22 +1,23 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/docker/go-units"
 	"github.com/donknap/dpanel/app/common/logic"
 	"github.com/donknap/dpanel/common/function"
+	"github.com/donknap/dpanel/common/service/docker/types"
 	"github.com/donknap/dpanel/common/service/storage"
 	"github.com/donknap/dpanel/common/types/define"
 	"github.com/gin-gonic/gin"
+	"github.com/mholt/archives"
 	"github.com/shirou/gopsutil/v4/disk"
 	"github.com/we7coreteam/w7-rangine-go/v2/src/http/controller"
 )
@@ -26,59 +27,48 @@ type Panel struct {
 }
 
 func (self Panel) Usage(http *gin.Context) {
-	type pathItem struct {
-		Name        string  `json:"name"`
-		Path        string  `json:"path"`
+	type pathUsageItem struct {
+		*types.ValueItem
 		Used        int64   `json:"used"`        // 路径已用空间 (Bytes)
 		UsedSize    string  `json:"usedSize"`    // 路径已使用大小
 		UsedPercent float64 `json:"usedPercent"` // 路径使用率 (%)
 	}
 
-	savePath := []*pathItem{
-		{Name: "database", Path: "/dpanel.db"},
-		{Name: "store", Path: "/store"},
-		{Name: "backup", Path: "/backup"},
-		{Name: "compose-local", Path: "/compose"},
-	}
-
-	if setting, err := (logic.Setting{}).GetValue(logic.SettingGroupSetting, logic.SettingGroupSettingDocker); err == nil {
-		for _, item := range setting.Value.Docker {
-			if item.EnableComposePath {
-				name := fmt.Sprintf("compose-%s", item.Name)
-				savePath = append(savePath, &pathItem{
-					Name: name,
-					Path: name,
-				})
-			}
-		}
-	}
-
-	savePath = append(savePath,
-		&pathItem{Name: "export/file", Path: "/storage/export/file"},
-		&pathItem{Name: "export/container", Path: "/storage/export/container"},
-		&pathItem{Name: "export/image", Path: "/storage/export/image"},
-		&pathItem{Name: "export/panel", Path: "/storage/export/panel"},
-		&pathItem{Name: "temp", Path: "/storage/temp"},
-	)
 	var diskTotal uint64
 	var panelTotal uint64
 
 	if v, err := disk.Usage(storage.Local{}.GetSaveRootPath()); err == nil {
 		diskTotal = v.Total
 	}
+
 	if v, err := function.PathSize(storage.Local{}.GetStorageLocalPath()); err == nil {
 		panelTotal = uint64(v)
 	}
 
-	for _, item := range savePath {
-		if v, err := function.PathSize(filepath.Join(storage.Local{}.GetStorageLocalPath(), item.Path)); err == nil {
-			item.Used = v
-		} else {
-			item.Used = 0
+	savePath := function.PluckArrayWalk((logic.Panel{}).GetPanelPath(), func(item *types.ValueItem) (*pathUsageItem, bool) {
+		usageItem := &pathUsageItem{
+			ValueItem:   item,
+			Used:        0,
+			UsedSize:    "",
+			UsedPercent: 0,
 		}
-		item.UsedSize = units.HumanSize(float64(item.Used))
-		item.UsedPercent = float64(item.Used) / float64(diskTotal) * 100
-	}
+		item.Value = filepath.Clean(item.Value)
+		if _, err := os.Stat(item.Value); errors.Is(err, os.ErrNotExist) {
+			return nil, false
+		}
+		if v, err := function.PathSize(item.Value); err == nil {
+			usageItem.Used = v
+		} else {
+			usageItem.Used = 0
+		}
+		usageItem.UsedSize = units.HumanSize(float64(usageItem.Used))
+		usageItem.UsedPercent = float64(usageItem.Used) / float64(diskTotal) * 100
+		return usageItem, true
+	})
+
+	sort.Slice(savePath, func(i, j int) bool {
+		return savePath[i].Used > savePath[j].Used
+	})
 
 	self.JsonResponseWithoutError(http, gin.H{
 		"pathUsage":  savePath,
@@ -90,63 +80,58 @@ func (self Panel) Usage(http *gin.Context) {
 
 func (self Panel) Backup(http *gin.Context) {
 	type ParamsValidate struct {
-		IgnorePath []string `json:"ignorePath"`
+		BackupPath []string `json:"backupPath"`
 	}
+
 	params := ParamsValidate{}
 	if !self.Validate(http, &params) {
 		return
 	}
-	// sock 目录忽略掉，无法打包
-	params.IgnorePath = append(params.IgnorePath, "/sock")
 
-	rootPath := storage.Local{}.GetStorageLocalPath()
-	backupFile, err := storage.Local{}.CreateSaveFile(
-		path.Join("export",
-			"panel",
-			fmt.Sprintf("dpanel-backup-%s.tar.gz", time.Now().Format(define.DateYmdHis))))
-	if err != nil {
-		self.JsonResponseWithError(http, err, 500)
-		return
-	}
-	backupFilePath := backupFile.Name()
-	_ = backupFile.Close()
-
-	ignoreMap := make(map[string]bool)
-	for _, p := range params.IgnorePath {
-		cleanPath := strings.TrimPrefix(filepath.Clean(p), "/")
-		absIgnorePath := filepath.Join(rootPath, cleanPath)
-		ignoreMap[absIgnorePath] = true
-	}
-
-	var targetPaths []string
-	entries, err := os.ReadDir(rootPath)
-	if err != nil {
-		self.JsonResponseWithError(http, err, 500)
-		return
-	}
-
-	for _, entry := range entries {
-		fullPath := filepath.Join(rootPath, entry.Name())
-		if !ignoreMap[fullPath] {
-			targetPaths = append(targetPaths, fullPath)
-		}
-	}
-
-	if len(targetPaths) == 0 {
-		self.JsonResponseWithError(http, function.ErrorMessage(define.ErrorMessageCommonDataNotFoundOrDeleted), 500)
-		return
-	}
-
-	err = function.Tar(backupFilePath, targetPaths, "", true, func(path string, info os.FileInfo) bool {
-		return ignoreMap[path]
+	panelAllPath := function.PluckArrayWalk((logic.Panel{}).GetPanelPath(), func(item *types.ValueItem) (string, bool) {
+		return item.Value, true
 	})
+
+	if function.IsEmptyArray(params.BackupPath) {
+		params.BackupPath = panelAllPath
+	}
+
+	backupFile, err := storage.Local{}.CreateSaveFile(filepath.Join("export", "panel", fmt.Sprintf("dpanel-backup-%s.tar.zst", time.Now().Format(define.DateYmdHis))))
+	if err != nil {
+		self.JsonResponseWithError(http, err, 500)
+		return
+	}
+	defer func() {
+		_ = backupFile.Close()
+	}()
+
+	targetFile := function.PluckArrayMapWalk(params.BackupPath, func(item string) (string, string, bool) {
+		if !function.InArray(panelAllPath, item) {
+			return "", "", false
+		}
+		return item, filepath.ToSlash(item), true
+	})
+
+	zipCtx := context.Background()
+	files, err := archives.FilesFromDisk(zipCtx, nil, targetFile)
+	if err != nil {
+		self.JsonResponseWithError(http, err, 500)
+		return
+	}
+
+	format := archives.CompressedArchive{
+		Compression: archives.Zstd{},
+		Archival:    archives.Tar{},
+	}
+
+	err = format.Archive(zipCtx, backupFile, files)
 	if err != nil {
 		self.JsonResponseWithError(http, err, 500)
 		return
 	}
 
 	self.JsonResponseWithoutError(http, gin.H{
-		"path": backupFilePath,
+		"path": backupFile.Name(),
 	})
 	return
 }
@@ -227,6 +212,30 @@ func (self Panel) BackupDelete(http *gin.Context) {
 	return
 }
 
+func (self Panel) BackupDownload(http *gin.Context) {
+	type ParamsValidate struct {
+		Name string `json:"name"`
+	}
+	params := ParamsValidate{}
+	if !self.Validate(http, &params) {
+		return
+	}
+	backupFilePath := filepath.Join(storage.Local{}.GetSaveRootPath(), "export", "panel", function.PathClean(params.Name))
+	if _, err := os.Stat(backupFilePath); err != nil {
+		self.JsonResponseWithError(http, err, 500)
+		return
+	}
+	downloadUrl, err := logic.Attach{}.PreDownload(backupFilePath, time.Second*10)
+	if err != nil {
+		self.JsonResponseWithError(http, err, 500)
+		return
+	}
+	self.JsonResponseWithoutError(http, gin.H{
+		"downloadUrl": downloadUrl,
+	})
+	return
+}
+
 func (self Panel) Restore(http *gin.Context) {
 	type ParamsValidate struct {
 		FileName string `json:"fileName"`
@@ -235,5 +244,4 @@ func (self Panel) Restore(http *gin.Context) {
 	if !self.Validate(http, &params) {
 		return
 	}
-
 }

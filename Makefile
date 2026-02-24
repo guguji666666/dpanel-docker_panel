@@ -211,26 +211,30 @@ release:
 
 	@echo ">> Building [Lite] edition..."
 	docker buildx build --builder dpanel-context-local-builder --target lite \
-	   $(call get_tags,beta-lite) \
-	   --platform $(D_PLATFORMS) \
-	   --build-arg APP_VERSION=${APP_VER} \
-	   --build-arg APP_FAMILY=${FAMILY} \
-	   --build-arg APP_LIBC=${LIBC} \
-	   --build-arg HTTP_PROXY=${HTTP_PROXY} \
-       --build-arg HTTPS_PROXY=${HTTP_PROXY} \
-	   -f $(DOCKER_FILE) . --push
+		$(call get_tags,beta-lite) \
+		--platform $(D_PLATFORMS) \
+		--build-arg APP_VERSION=${APP_VER} \
+		--build-arg APP_FAMILY=${FAMILY} \
+		--build-arg APP_LIBC=${LIBC} \
+		--build-arg HTTP_PROXY=${HTTP_PROXY} \
+		--build-arg HTTPS_PROXY=${HTTP_PROXY} \
+		--secret id=GIT_TOKEN,env=GIT_TOKEN \
+		--secret id=GARBLE_SEED,env=GARBLE_SEED \
+		-f $(DOCKER_FILE) . --push
 
 	if [ "$(LITE)" = "0" ]; then \
 	   echo ">> Building [Production] edition..."; \
 	   docker buildx build --builder dpanel-context-local-builder --target production \
-		 $(call get_tags,beta) \
-		 --platform $(D_PLATFORMS) \
-		 --build-arg APP_VERSION=${APP_VER} \
-		 --build-arg APP_FAMILY=${FAMILY} \
-		 --build-arg APP_LIBC=${LIBC} \
-		 --build-arg HTTP_PROXY=${HTTP_PROXY} \
-         --build-arg HTTPS_PROXY=${HTTP_PROXY} \
-		 -f $(DOCKER_FILE) . --push; \
+		$(call get_tags,beta) \
+		--platform $(D_PLATFORMS) \
+		--build-arg APP_VERSION=${APP_VER} \
+		--build-arg APP_FAMILY=${FAMILY} \
+		--build-arg APP_LIBC=${LIBC} \
+		--build-arg HTTP_PROXY=${HTTP_PROXY} \
+		--build-arg HTTPS_PROXY=${HTTP_PROXY} \
+		--secret id=GIT_TOKEN,env=GIT_TOKEN \
+		--secret id=GARBLE_SEED,env=GARBLE_SEED \
+		-f $(DOCKER_FILE) . --push; \
 	fi
 	@git checkout -- "${PLUGIN_EXPLORER_IMAGE_DIR}/image-amd64.tar"
 clean:
