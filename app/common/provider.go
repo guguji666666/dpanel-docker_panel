@@ -29,12 +29,12 @@ func (provider *Provider) Register(httpServer *httpserver.Server) {
 
 		cors.POST("/common/attach/upload", controller.Attach{}.Upload)
 		cors.POST("/common/attach/delete", controller.Attach{}.Delete)
+		cors.GET("/common/attach/download", controller.Attach{}.Download)
 
 		// 仓库相关
 		cors.POST("/common/registry/create", controller.Registry{}.Create)
 		cors.POST("/common/registry/get-list", controller.Registry{}.GetList)
 		cors.POST("/common/registry/get-detail", controller.Registry{}.GetDetail)
-		cors.POST("/common/registry/update", controller.Registry{}.Update)
 		cors.POST("/common/registry/delete", controller.Registry{}.Delete)
 
 		// 全局
@@ -119,6 +119,14 @@ func (provider *Provider) Register(httpServer *httpserver.Server) {
 		cors.POST("/common/explorer/chmod", controller.Explorer{}.Chmod)
 		cors.POST("/common/explorer/mkdir", controller.Explorer{}.MkDir)
 		cors.POST("/common/explorer/copy", controller.Explorer{}.Copy)
+
+		cors.POST("/common/panel/usage", controller.Panel{}.Usage)
+		cors.POST("/common/panel/backup", controller.Panel{}.Backup)
+		cors.POST("/common/panel/backup-list", controller.Panel{}.BackupList)
+		cors.POST("/common/panel/backup-delete", controller.Panel{}.BackupDelete)
+		cors.POST("/common/panel/backup-download", controller.Panel{}.BackupDownload)
+		cors.POST("/common/panel/backup-restore", controller.Panel{}.BackupRestore)
+		cors.POST("/common/panel/backup-import", controller.Panel{}.BackupImport)
 	})
 
 	httpServer.RegisterRouters(func(engine *gin.Engine) {

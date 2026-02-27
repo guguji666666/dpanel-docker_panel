@@ -53,7 +53,7 @@ func (self Explorer) Export(http *gin.Context) {
 		return
 	}
 	fileName := strings.Trim(containerInfo.Name, "/") + "-" + time.Now().Format(define.DateYmdHis) + ".zip"
-	tempFile, err := storage.Local{}.CreateTempFile("export/file/" + fileName)
+	tempFile, err := storage.Local{}.CreateSaveFile("export/file/" + fileName)
 	if err != nil {
 		self.JsonResponseWithError(http, err, 500)
 		return
@@ -137,6 +137,9 @@ func (self Explorer) ImportFileContent(http *gin.Context) {
 	if !self.Validate(http, &params) {
 		return
 	}
+	params.File = function.PathClean(params.File)
+	params.DestPath = function.PathClean(params.DestPath)
+
 	if strings.HasPrefix(params.File, "/") {
 		self.JsonResponseWithError(http, function.ErrorMessage(define.ErrorMessageContainerExplorerInvalidFilename), 500)
 		return
@@ -648,9 +651,10 @@ func (self Explorer) AttachVolume(http *gin.Context) {
 		return
 	}
 	_ = notice.Message{}.Info(".volumeMountSomeVolume")
-	path := fmt.Sprintf("/%s", function.GetMd5(params.Name))
-	explorerPlugin, err := plugin.NewPlugin(plugin.PluginExplorer, map[string]*plugin.TemplateParser{
-		plugin.PluginExplorer: {
+	path := fmt.Sprintf("/%s", function.Md5(params.Name))
+	explorerPlugin, err := plugin.NewPlugin(plugin.ExplorerName, map[string]*plugin.TemplateParser{
+		plugin.ExplorerName: {
+			WorkingDir: path,
 			ExtService: compose.ExtService{
 				External: compose.ExternalItem{
 					Volumes: []string{
@@ -679,8 +683,7 @@ func (self Explorer) AttachVolume(http *gin.Context) {
 }
 
 func (self Explorer) DestroyProxyContainer(http *gin.Context) {
-	_ = notice.Message{}.Info(".volumeMountSomeVolume")
-	explorerPlugin, err := plugin.NewPlugin(plugin.PluginExplorer, nil)
+	explorerPlugin, err := plugin.NewPlugin(plugin.ExplorerName, nil)
 	if err != nil {
 		self.JsonResponseWithError(http, err, 500)
 		return

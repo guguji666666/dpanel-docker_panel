@@ -1,17 +1,22 @@
 package controller
 
 import (
+	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
-	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	"github.com/donknap/dpanel/app/application/logic"
+	logic2 "github.com/donknap/dpanel/app/common/logic"
 	"github.com/donknap/dpanel/common/accessor"
 	"github.com/donknap/dpanel/common/dao"
 	"github.com/donknap/dpanel/common/entity"
@@ -19,9 +24,9 @@ import (
 	"github.com/donknap/dpanel/common/service/docker"
 	"github.com/donknap/dpanel/common/service/exec/local"
 	"github.com/donknap/dpanel/common/service/storage"
+	"github.com/donknap/dpanel/common/service/ws"
 	"github.com/donknap/dpanel/common/types/define"
 	"github.com/gin-gonic/gin"
-	"github.com/we7coreteam/w7-rangine-go/v2/pkg/support/facade"
 	"github.com/we7coreteam/w7-rangine-go/v2/src/http/controller"
 	"gorm.io/datatypes"
 	"gorm.io/gen"
@@ -81,11 +86,12 @@ func (self SiteDomain) Create(http *gin.Context) {
 		}
 		// 转发时必须保证当前环境有 dpanel 面板
 		// 将当前容器加入到默认 dpanel-local 网络中，并指定 Hostname 用于 Nginx 反向代理
-		dpanelContainerInfo := container.InspectResponse{}
-		if dpanelContainerInfo, err = docker.Sdk.Client.ContainerInspect(docker.Sdk.Ctx, facade.GetConfig().GetString("app.name")); err != nil {
+		dpanelInfo := logic2.Setting{}.GetDPanelInfo()
+		if dpanelInfo.ContainerInfo.ContainerJSONBase == nil {
 			self.JsonResponseWithError(http, function.ErrorMessage(define.ErrorMessageSiteDomainNotFoundDPanel), 500)
 			return
 		}
+
 		if _, err = docker.Sdk.Client.NetworkInspect(docker.Sdk.Ctx, define.DPanelProxyNetworkName, network.InspectOptions{}); err != nil {
 			slog.Debug("site domain create default network", "name", define.DPanelProxyNetworkName)
 			_, err = docker.Sdk.Client.NetworkCreate(docker.Sdk.Ctx, define.DPanelProxyNetworkName, network.CreateOptions{
@@ -101,19 +107,25 @@ func (self SiteDomain) Create(http *gin.Context) {
 			}
 		}
 
+		dpanelLocalNetwork, err := docker.Sdk.Client.NetworkInspect(docker.Sdk.Ctx, define.DPanelProxyNetworkName, network.InspectOptions{})
+		if err != nil {
+			self.JsonResponseWithError(http, err, 500)
+			return
+		}
+
 		// 当面板自己没有加入默认网络时，加入并配置 hostname
 		// 假如当前转发的容器就是面板自己，则不在这里处理，统一在下面加入网络
-		if _, ok := dpanelContainerInfo.NetworkSettings.Networks[define.DPanelProxyNetworkName]; !ok {
-			if dpanelContainerInfo.ID != containerRow.ID {
-				err = docker.Sdk.Client.NetworkConnect(docker.Sdk.Ctx, define.DPanelProxyNetworkName, dpanelContainerInfo.ID, &network.EndpointSettings{
-					Aliases: []string{
-						fmt.Sprintf(define.DPanelNetworkHostName, strings.Trim(dpanelContainerInfo.Name, "/")),
-					},
-				})
-				if err != nil {
-					self.JsonResponseWithError(http, function.ErrorMessage(define.ErrorMessageSiteDomainJoinDefaultNetworkFailed, err.Error()), 500)
-					return
-				}
+		if _, _, ok := function.PluckMapItemWalk(dpanelLocalNetwork.Containers, func(k string, v network.EndpointResource) bool {
+			return k == dpanelInfo.ContainerInfo.ID
+		}); !ok {
+			err = docker.Sdk.Client.NetworkConnect(docker.Sdk.Ctx, define.DPanelProxyNetworkName, dpanelInfo.ContainerInfo.ID, &network.EndpointSettings{
+				Aliases: []string{
+					fmt.Sprintf(define.DPanelNetworkHostName, strings.Trim(dpanelInfo.ContainerInfo.Name, "/")),
+				},
+			})
+			if err != nil {
+				self.JsonResponseWithError(http, function.ErrorMessage(define.ErrorMessageSiteDomainJoinDefaultNetworkFailed, err.Error()), 500)
+				return
 			}
 		}
 
@@ -133,8 +145,8 @@ func (self SiteDomain) Create(http *gin.Context) {
 		}
 		siteDomainRow.ContainerID = containerRow.Name
 	}
-	params.ExtraNginx = template.HTML(params.ExtraNginx)
-	params.TargetName = function.GetMd5(params.ServerName)
+
+	params.TargetName = function.Md5(params.ServerName)
 	siteDomainRow.Setting = &params.SiteDomainSettingOption
 
 	if params.CertName != "" && params.EnableSSL {
@@ -212,12 +224,16 @@ func (self SiteDomain) GetDetail(http *gin.Context) {
 		self.JsonResponseWithError(http, function.ErrorMessage(define.ErrorMessageCommonDataNotFoundOrDeleted), 500)
 		return
 	}
-	vhost, err := os.ReadFile(filepath.Join(storage.Local{}.GetNginxSettingPath(), fmt.Sprintf(logic.VhostFileName, domainRow.ServerName)))
+
+	vhostFileName := fmt.Sprintf(logic.VhostFileName, domainRow.ServerName)
+	vhost, err := os.ReadFile(filepath.Join(storage.Local{}.GetNginxSettingPath(), vhostFileName))
 	if err != nil {
 		self.JsonResponseWithError(http, err, 500)
 		return
 	}
-
+	if extraVhost, err := os.ReadFile(filepath.Join(storage.Local{}.GetNginxExtraSettingPath(), vhostFileName)); err == nil {
+		domainRow.Setting.ExtraNginx = template.HTML(extraVhost)
+	}
 	self.JsonResponseWithoutError(http, gin.H{
 		"domain": domainRow,
 		"vhost":  string(vhost),
@@ -267,7 +283,11 @@ func (self SiteDomain) Delete(http *gin.Context) {
 
 }
 
-func (self SiteDomain) RestartNginx(http *gin.Context) {
+func (self SiteDomain) NginxRestart(http *gin.Context) {
+	if err := (logic.Site{}).MakeNginxResolver(); err != nil {
+		self.JsonResponseWithError(http, err, 500)
+		return
+	}
 	out, err := local.QuickRun("nginx -t")
 	if err != nil {
 		self.JsonResponseWithError(http, err, 500)
@@ -296,6 +316,82 @@ func (self SiteDomain) RestartNginx(http *gin.Context) {
 			}
 		}
 	}
+	self.JsonSuccessResponse(http)
+	return
+}
+
+func (self SiteDomain) NginxLog(http *gin.Context) {
+	type ParamsValidate struct {
+		Log       []string `json:"log"`
+		LineTotal int      `json:"lineTotal"`
+	}
+	params := ParamsValidate{}
+	if !self.Validate(http, &params) {
+		return
+	}
+
+	wsBuffer := ws.NewProgressPip(ws.MessageTypeNginxLog)
+	defer wsBuffer.Close()
+
+	ctx, cancel := context.WithCancel(wsBuffer.Context())
+	defer cancel()
+
+	var wg sync.WaitGroup
+
+	for _, s := range params.Log {
+		wg.Add(1)
+
+		go func(filename string) {
+			defer wg.Done()
+
+			file, err := os.Open(filename)
+			if err != nil {
+				wsBuffer.BroadcastMessage(function.ConsoleWriteError(fmt.Sprintf("打开文件失败 %s: %v", filename, err)))
+				return
+			}
+
+			defer file.Close()
+
+			err = function.FileSeekToLastNLines(file, params.LineTotal)
+			if err != nil {
+				wsBuffer.BroadcastMessage(function.ConsoleWriteError(err.Error()))
+				return
+			}
+
+			reader := bufio.NewReader(file)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
+				line, err := reader.ReadString('\n')
+				if err != nil {
+					if err == io.EOF {
+						select {
+						case <-ctx.Done():
+							return
+						case <-time.After(100 * time.Millisecond):
+							continue
+						}
+					}
+					wsBuffer.BroadcastMessage(function.ConsoleWriteError(err.Error()))
+					return
+				}
+				wsBuffer.BroadcastMessage(line)
+			}
+		}(s)
+	}
+
+	go func() {
+		wg.Wait()
+		cancel()
+		wsBuffer.Close()
+	}()
+
+	<-wsBuffer.Done()
+
 	self.JsonSuccessResponse(http)
 	return
 }

@@ -1,11 +1,14 @@
 package buildx
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/docker/docker/api/types/registry"
 	"github.com/donknap/dpanel/common/function"
 	"github.com/donknap/dpanel/common/service/docker/types"
 	"github.com/donknap/dpanel/common/service/storage"
@@ -15,15 +18,33 @@ type Option func(self *Builder) error
 
 func WithWorkDir(path string) Option {
 	return func(self *Builder) error {
-		self.workDir = path
+		self.options.WorkDir = path
 		return nil
 	}
 }
 
 // WithTag 添加镜像 Tag (支持多个)
-func WithTag(tags ...string) Option {
+func WithTag(targetName string, tags ...string) Option {
 	return func(self *Builder) error {
-		self.options.Tags = append(self.options.Tags, tags...)
+		if len(tags) == 0 {
+			return nil
+		}
+
+		found := false
+		for i, group := range self.options.Target {
+			if group.Target == targetName {
+				self.options.Target[i].Tags = append(self.options.Target[i].Tags, tags...)
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			self.options.Target = append(self.options.Target, BuildOptionsTarget{
+				Target: targetName,
+				Tags:   tags,
+			})
+		}
 		return nil
 	}
 }
@@ -31,7 +52,7 @@ func WithTag(tags ...string) Option {
 // WithDockerFilePath WithDockerFile 指定 Dockerfile 路径
 func WithDockerFilePath(path string) Option {
 	return func(self *Builder) error {
-		self.workDir = filepath.Dir(path)
+		self.options.WorkDir = filepath.Dir(path)
 		self.options.File = path
 		return nil
 	}
@@ -46,22 +67,22 @@ func WithDockerFileContent(content []byte) Option {
 		if err != nil {
 			return err
 		}
-		self.workDir = temp
+		self.options.WorkDir = temp
 		go func() {
 			<-self.ctx.Done()
-			err = os.RemoveAll(self.workDir)
+			err = os.RemoveAll(self.options.WorkDir)
 			if err != nil {
-				slog.Debug("buildx delete dockerfile temp path", "path", self.workDir)
+				slog.Debug("buildx delete dockerfile temp path", "path", self.options.WorkDir)
 			}
 		}()
-		return os.WriteFile(filepath.Join(self.workDir, "Dockerfile"), content, 0666)
+		return os.WriteFile(filepath.Join(self.options.WorkDir, "Dockerfile"), content, 0666)
 	}
 }
 
 // WithGitUrl https://[username]:[password]@github.com/username/name.git#branchName:path
 func WithGitUrl(url string) Option {
 	return func(self *Builder) error {
-		self.workDir = url
+		self.options.WorkDir = url
 		return nil
 	}
 }
@@ -82,12 +103,12 @@ func WithZipFilePath(path string) Option {
 		defer func() {
 			_ = os.Remove(path)
 		}()
-		self.workDir = temp
+		self.options.WorkDir = temp
 		go func() {
 			<-self.ctx.Done()
-			err = os.RemoveAll(self.workDir)
+			err = os.RemoveAll(self.options.WorkDir)
 			if err != nil {
-				slog.Debug("buildx delete zip temp path", "path", self.workDir)
+				slog.Debug("buildx delete zip temp path", "path", self.options.WorkDir)
 			}
 		}()
 		return nil
@@ -102,118 +123,69 @@ func WithPlatform(platforms ...string) Option {
 	}
 }
 
-func WithPlatformArm64() Option {
-	name := "linux/arm64"
-	return func(self *Builder) error {
-		if !function.InArray(self.options.Platforms, name) {
-			self.options.Platforms = append(self.options.Platforms, name)
-		}
-		return nil
-	}
-}
-
-// WithPlatformAmd64 快捷方式：仅构建 linux/amd64
-func WithPlatformAmd64() Option {
-	name := "linux/amd64"
-	return func(self *Builder) error {
-		if !function.InArray(self.options.Platforms, name) {
-			self.options.Platforms = append(self.options.Platforms, name)
-		}
-		return nil
-	}
-}
-
-func WithPlatformArm() Option {
-	name := "linux/arm"
-	return func(self *Builder) error {
-		if !function.InArray(self.options.Platforms, name) {
-			self.options.Platforms = append(self.options.Platforms, name)
-		}
-		return nil
-	}
-}
-
 func WithBuildArg(args ...types.EnvItem) Option {
 	return func(self *Builder) error {
 		for _, item := range args {
+			// 如果包含 HTTP_PROXY 就透传到环境变量中
+			if strings.HasSuffix(strings.ToUpper(item.Name), "_PROXY") {
+				self.env = append(self.env, item)
+			}
 			self.options.BuildArg = append(self.options.BuildArg, item.String())
 		}
 		return nil
 	}
 }
 
-// WithTarget 指定构建阶段
-func WithTarget(target string) Option {
+// WithBuildSecret 添加 Secret
+func WithBuildSecret(args ...types.EnvItem) Option {
 	return func(self *Builder) error {
-		self.options.Target = target
-		return nil
-	}
-}
-
-// WithSecret 添加 Secret (format: "id=mysecret,src=/local/secret")
-func WithSecret(id, src string) Option {
-	return func(self *Builder) error {
-		val := fmt.Sprintf("id=%s,src=%s", id, src)
-		self.options.Secrets = append(self.options.Secrets, val)
-		return nil
-	}
-}
-
-// WithNoCache 禁用缓存
-func WithNoCache() Option {
-	return func(self *Builder) error {
-		self.options.NoCache = true
-		return nil
-	}
-}
-
-// WithCacheRegistry 成对配置 Registry 缓存：从指定镜像拉取缓存，并将新缓存推送到该镜像
-func WithCacheRegistry(ref string, mode string) Option {
-	return func(self *Builder) error {
-		val := fmt.Sprintf("type=registry,ref=%s", ref)
-		if mode != "" {
-			val += fmt.Sprintf(",mode=%s", mode)
+		for _, item := range args {
+			// value 需要解一下密
+			if v, err := function.RSADecode(item.Value, nil); err == nil {
+				item.Value = v
+			}
+			self.env = append(self.env, item)
+			val := fmt.Sprintf("id=%s,env=%s", item.Name, item.Name)
+			self.options.Secrets = append(self.options.Secrets, val)
 		}
-		self.options.CacheFrom = append(self.options.CacheFrom, val)
-		self.options.CacheTo = append(self.options.CacheTo, val)
 		return nil
 	}
 }
 
-// WithCacheGHA 成对配置 GitHub Actions 专用缓存 (自动利用 GitHub 缓存 API)
-func WithCacheGHA(mode string) Option {
+func WithCache(mode string) Option {
 	return func(self *Builder) error {
-		val := "type=gha"
-		if mode != "" {
-			val += fmt.Sprintf(",mode=%s", mode)
+		self.options.NoCache = false
+		self.options.CacheTo = []string{}
+		self.options.CacheFrom = []string{}
+
+		var firstTag string
+		for _, group := range self.options.Target {
+			if len(group.Tags) > 0 {
+				firstTag = group.Tags[0]
+				break
+			}
 		}
-		self.options.CacheFrom = append(self.options.CacheFrom, val)
-		self.options.CacheTo = append(self.options.CacheTo, val)
-		return nil
-	}
-}
 
-// WithCacheInline 配置内联缓存 (缓存直接嵌入镜像中)
-// 注意：inline 模式不需要 cache-from，因为它直接从镜像本身读取
-func WithCacheInline() Option {
-	return func(self *Builder) error {
-		self.options.CacheTo = append(self.options.CacheTo, "type=inline")
-		return nil
-	}
-}
-
-// WithOutputDocker 导出为 Docker 镜像格式
-func WithOutputDocker() Option {
-	return func(self *Builder) error {
-		self.options.Outputs = append(self.options.Outputs, "type=docker")
-		return nil
-	}
-}
-
-// WithOutputOCI 导出为 OCI 兼容的镜像布局文件夹或文件
-func WithOutputOCI(dest string) Option {
-	return func(self *Builder) error {
-		self.options.Outputs = append(self.options.Outputs, fmt.Sprintf("type=oci,dest=%s", dest))
+		switch mode {
+		case "none":
+			self.options.NoCache = true
+		case "default":
+		case "inline":
+			self.options.CacheTo = append(self.options.CacheTo, "type=inline")
+			if firstTag != "" {
+				self.options.CacheFrom = append(self.options.CacheFrom, firstTag)
+			}
+		case "registry":
+			if firstTag == "" {
+				return errors.New("cache mode 'registry' requires at least one valid image tag")
+			}
+			if a, _, ok := strings.Cut(firstTag, ":"); ok {
+				self.options.CacheTo = append(self.options.CacheTo, fmt.Sprintf("type=registry,ref=%s,mode=max", a+":dpanel-buildcache"))
+				self.options.CacheFrom = append(self.options.CacheFrom, fmt.Sprintf("type=registry,ref=%s", a+":dpanel-buildcache"))
+			}
+		default:
+			return nil
+		}
 		return nil
 	}
 }
@@ -223,6 +195,9 @@ func WithOutputOCI(dest string) Option {
 // compression: 压缩方式 ("gzip", "zstd")
 func WithOutputImage(push bool, compression string) Option {
 	return func(self *Builder) error {
+		if !push {
+			return nil
+		}
 		val := "type=image"
 		if push {
 			val += ",push=true"
@@ -230,7 +205,21 @@ func WithOutputImage(push bool, compression string) Option {
 		if compression != "" {
 			val += fmt.Sprintf(",compression=%s", compression)
 		}
+		self.options.Push = true
 		self.options.Outputs = append(self.options.Outputs, val)
+		return nil
+	}
+}
+
+func WithRegistryAuth(auth ...registry.AuthConfig) Option {
+	return func(self *Builder) error {
+		for _, config := range auth {
+			if ok := function.InArrayWalk(self.options.RegistryAuth, func(item registry.AuthConfig) bool {
+				return item.ServerAddress == config.ServerAddress
+			}); !ok {
+				self.options.RegistryAuth = append(self.options.RegistryAuth, config)
+			}
+		}
 		return nil
 	}
 }

@@ -6,17 +6,25 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/donknap/dpanel/common/function"
+	"github.com/donknap/dpanel/common/service/storage"
 	"github.com/we7coreteam/w7-rangine-go/v2/pkg/support/facade"
 )
 
 func NewHttpFs(fs fs.FS) http.FileSystem {
-	cacheDir := filepath.Join(os.TempDir(), "dpanel_js_cache")
+	var cacheDir string
+	if os.Getenv("APP_ENV") == "debug" {
+		cacheDir, _ = storage.Local{}.CreateTempDir("dpanel_js_cache")
+	} else {
+		cacheDir = filepath.Join(os.TempDir(), "dpanel_js_cache")
+	}
+	slog.Debug("js cache:", "path", cacheDir)
 	_ = os.RemoveAll(cacheDir)
 	_ = os.MkdirAll(cacheDir, 0755)
 
@@ -32,7 +40,7 @@ type HttpFs struct {
 }
 
 func (self HttpFs) Open(name string) (http.File, error) {
-	if !strings.HasSuffix(name, ".js") {
+	if !strings.HasSuffix(name, ".js") && !strings.HasSuffix(name, ".css") {
 		return self.fs.Open(name)
 	}
 

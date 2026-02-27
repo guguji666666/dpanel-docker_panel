@@ -21,6 +21,9 @@ var (
 	CacheKeyConsoleData           = "console:data:%s" // 用于脚本存储一些自定义数据
 	CacheKeyCronTaskStatus        = "cron:task:status:%d"
 	// CacheKeyDockerEventJob        = "docker:event:%s:%s"
+	CacheKeyRsaKey = "rsa:key"
+	CacheKeyRsaPub = "rsa:pub"
+	CacheKeyAttach = "attach:%s"
 )
 
 var (

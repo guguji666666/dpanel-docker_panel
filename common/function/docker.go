@@ -25,7 +25,7 @@ func SplitCommandArray(cmd string) []string {
 	}
 	result, err := shellwords.Parse(cmd)
 	if err != nil {
-		slog.Debug("function split command array ", "error", err)
+		slog.Debug("function split command array", "error", err)
 	}
 	return result
 }
@@ -117,7 +117,7 @@ func (self Tag) getName() string {
 }
 
 func ImageTag(tag string) *Tag {
-	tag = strings.TrimPrefix(strings.TrimPrefix(tag, "http://"), "https://")
+	tag = strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(tag, "/"), "http://"), "https://")
 	result := &Tag{}
 
 	ref, err := reference.ParseNormalizedNamed(tag)

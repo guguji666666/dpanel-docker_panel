@@ -1,10 +1,13 @@
 package controller
 
 import (
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 
+	"github.com/donknap/dpanel/app/common/logic"
 	"github.com/donknap/dpanel/common/function"
 	"github.com/donknap/dpanel/common/service/storage"
 	"github.com/donknap/dpanel/common/types/define"
@@ -30,14 +33,22 @@ func (self Attach) Upload(http *gin.Context) {
 		self.JsonResponseWithError(http, err, 500)
 		return
 	}
+	defer func() {
+		_ = file.Close()
+	}()
 	slog.Debug("upload file", "path", file.Name())
 	err = http.SaveUploadedFile(fileHeader, file.Name())
 	if err != nil {
 		self.JsonResponseWithError(http, err, 500)
 		return
 	}
+	rel, err := filepath.Rel(storage.Local{}.GetSaveRootPath(), file.Name())
+	if err != nil {
+		self.JsonResponseWithError(http, err, 500)
+		return
+	}
 	self.JsonResponseWithoutError(http, gin.H{
-		"path": filepath.Base(file.Name()),
+		"path": rel,
 	})
 	return
 }
@@ -54,10 +65,20 @@ func (self Attach) Delete(http *gin.Context) {
 		self.JsonResponseWithError(http, function.ErrorMessage(define.ErrorMessageCommonDataNotFoundOrDeleted), 500)
 		return
 	}
-	params.Path = filepath.Clean(params.Path)
-	path := storage.Local{}.GetSaveRealPath(params.Path)
-	_, err := os.Stat(path)
+	params.Path = function.PathClean(params.Path)
+	uploadFile, err := storage.Local{}.CreateTempFile(params.Path)
 	if err != nil {
+		self.JsonResponseWithError(http, err, 500)
+		return
+	}
+	path := uploadFile.Name()
+	err = uploadFile.Close()
+	if err != nil {
+		self.JsonResponseWithError(http, err, 500)
+		return
+	}
+	_, err = os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
 		self.JsonResponseWithError(http, err, 500)
 		return
 	}
@@ -67,5 +88,32 @@ func (self Attach) Delete(http *gin.Context) {
 		return
 	}
 	self.JsonSuccessResponse(http)
+	return
+}
+
+func (self Attach) Download(http *gin.Context) {
+	type ParamsValidate struct {
+		Id          string `json:"id"`
+		ContentType string `json:"contentType"`
+	}
+	params := ParamsValidate{}
+	if !self.Validate(http, &params) {
+		return
+	}
+	params.Id = http.Query("id")
+
+	cacheKey := fmt.Sprintf(storage.CacheKeyAttach, params.Id)
+	val, ok := storage.Cache.Get(cacheKey)
+	if !ok {
+		self.JsonResponseWithError(http, function.ErrorMessage(define.ErrorMessageCommonDataNotFoundOrDeleted), 404)
+		return
+	}
+
+	task, ok := val.(*logic.AttachDownloadTask)
+	if !ok {
+		self.JsonResponseWithError(http, function.ErrorMessage(define.ErrorMessageCommonDataNotFoundOrDeleted), 500)
+		return
+	}
+	http.FileAttachment(task.FilePath, filepath.Base(task.FilePath))
 	return
 }

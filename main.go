@@ -152,7 +152,7 @@ func main() {
 				gzipMiddleware := engine.Use(gzip.Gzip(gzip.DefaultCompression))
 				gzipMiddleware.StaticFS(function.RouterUri("/dpanel/static/asset"), fs2.NewHttpFs(subFs))
 
-				engine.StaticFileFS(function.RouterUri("/favicon.ico"), "/image/dpanel.ico", http2.FS(subFs))
+				engine.StaticFileFS(function.RouterUri("/favicon.ico"), "/img/dpanel.ico", http2.FS(subFs))
 				engine.Static(function.RouterUri("/dpanel/static/image"), filepath.Join(storage.Local{}.GetSaveRootPath(), "image"))
 
 				engine.NoRoute(func(http *gin.Context) {
@@ -248,10 +248,8 @@ func initPath() error {
 		"cert/rsa",
 		"cert/docker",
 		"compose",
-		"nginx/default_host",
+		"nginx/extra_host",
 		"nginx/proxy_host",
-		"nginx/redirection_host",
-		"nginx/dead_host",
 		"nginx/temp",
 		"script",
 		"storage",
@@ -272,45 +270,36 @@ func initPath() error {
 }
 
 func initRSA() error {
-	// 用户可以自行挂载证书，如果没有则自动生成
-	// 证书用于 jwt 签名
-	homeDir, _ := os.UserHomeDir()
-	userRsaIdFiles := []string{
-		filepath.Join(homeDir, ".ssh", define.DefaultIdPubFile),
-		filepath.Join(homeDir, ".ssh", define.DefaultIdKeyFile),
-	}
-
+	// 用户可以自行配置证书的位置，如果没有则自动生成
+	// 证书用于 jwt 签名及其它密码加密
 	rsaIdFiles := []string{
-		filepath.Join(storage.Local{}.GetCertRsaPath(), define.DefaultIdPubFile),
-		filepath.Join(storage.Local{}.GetCertRsaPath(), define.DefaultIdKeyFile),
-	}
-
-	if function.FileExists(userRsaIdFiles...) {
-		// 如果系统已经存在了 id_rsa 系统的 rsa 文件复制过来方便后续使用
-		for _, file := range rsaIdFiles {
-			_ = os.Remove(file)
-		}
-		err := function.CopyFileFromPath(storage.Local{}.GetCertRsaPath(), userRsaIdFiles...)
-		if err != nil {
-			return err
-		}
-		return nil
+		facade.GetConfig().GetString("system.rsa.pub"),
+		facade.GetConfig().GetString("system.rsa.key"),
 	}
 
 	if !function.FileExists(rsaIdFiles...) {
 		for _, file := range rsaIdFiles {
 			_ = os.Remove(file)
 		}
-		_, err := local.QuickRun(fmt.Sprintf(
-			`ssh-keygen -t rsa -b 4096 -f "%s" -N "" -C "%s@%s"`,
-			filepath.Join(storage.Local{}.GetCertRsaPath(), define.DefaultIdKeyFile),
-			define.PanelAuthor,
-			define.PanelWebSite,
-		))
+		_, err := local.QuickRun("ssh-keygen",
+			"-t", "rsa",
+			"-b", "4096",
+			"-f", rsaIdFiles[1],
+			"-N", "",
+			"-C", define.PanelAuthor+"@"+define.PanelWebSite)
 		if err != nil {
 			return err
 		}
 	}
+
+	contents := function.PluckArrayWalk(rsaIdFiles, func(p string) ([]byte, bool) {
+		c, err := os.ReadFile(p)
+		return c, err == nil
+	})
+
+	// 将 rsa 加载内存中，方便使用
+	storage.Cache.Set(storage.CacheKeyRsaPub, contents[0], cache.DefaultExpiration)
+	storage.Cache.Set(storage.CacheKeyRsaKey, contents[1], cache.DefaultExpiration)
 
 	return nil
 }

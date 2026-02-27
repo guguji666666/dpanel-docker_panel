@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/donknap/dpanel/common/function"
 	"github.com/donknap/dpanel/common/service/storage"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
@@ -43,13 +44,9 @@ func WithAuthPem(username string, privateKeyPem string, password string) Option 
 	}
 }
 
-func WithAuthDefaultPem(username string) Option {
+func WithAuthDefaultPem(username string, rsaKeyContent []byte) Option {
 	return func(self *Client) error {
-		_, private, err := storage.GetCertRsaContent()
-		if err != nil {
-			return err
-		}
-		return WithAuthPem(username, string(private), "")(self)
+		return WithAuthPem(username, string(rsaKeyContent), "")(self)
 	}
 }
 
@@ -68,6 +65,11 @@ func WithAddress(address string, port int) Option {
 }
 
 func WithServerInfo(info *ServerInfo) []Option {
+	if info != nil && info.Password != "" {
+		if w, err := function.RSADecode(info.Password, nil); err == nil {
+			info.Password = w
+		}
+	}
 	option := make([]Option, 0)
 	option = append(option, WithAddress(info.Address, info.Port))
 	if info.AuthType == SshAuthTypePem {
@@ -75,7 +77,11 @@ func WithServerInfo(info *ServerInfo) []Option {
 	} else if info.AuthType == SshAuthTypeBasic {
 		option = append(option, WithAuthBasic(info.Username, info.Password))
 	} else if info.AuthType == SshAuthTypePemDefault {
-		option = append(option, WithAuthDefaultPem(info.Username))
+		var rsaKeyContent []byte
+		if v, ok := storage.Cache.Get(storage.CacheKeyRsaKey); ok {
+			rsaKeyContent = v.([]byte)
+		}
+		option = append(option, WithAuthDefaultPem(info.Username, rsaKeyContent))
 	}
 	return option
 }

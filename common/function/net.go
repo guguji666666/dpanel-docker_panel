@@ -1,8 +1,10 @@
 package function
 
 import (
+	"bufio"
 	"errors"
 	"net"
+	"os"
 	"strings"
 )
 
@@ -39,4 +41,31 @@ func IpIsLocalhost(address string) bool {
 		return ip.IsLoopback()
 	}
 	return false
+}
+
+func SystemResolver(defaultDnsIps ...string) []string {
+	var resolvers = make([]string, 0)
+	file, err := os.Open("/etc/resolv.conf")
+	if err != nil {
+		return defaultDnsIps
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "nameserver") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				resolvers = append(resolvers, fields[1])
+			}
+		}
+	}
+	if len(resolvers) == 0 {
+		return defaultDnsIps
+	}
+	return resolvers
 }

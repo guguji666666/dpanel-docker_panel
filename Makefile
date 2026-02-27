@@ -19,9 +19,9 @@ DETECTED_OS	  := $(shell uname -s | tr '[:upper:]' '[:lower:]')
 OS			   ?= $(DETECTED_OS)
 
 # --- Dynamic Versioning Logic ---
-AUTO_VERSION	 := $(shell date +%Y%m%d.%H%M)
-APP_VER		  := $(if $(VERSION),$(VERSION),$(AUTO_VERSION))
-IS_CUSTOM		:= $(if $(VERSION),1,0)
+AUTO_VERSION	 	:= $(shell date +%Y%m%d.%H%M)
+APP_VER 			:= $(if $(strip $(VERSION)),$(VERSION),$(AUTO_VERSION))
+IS_CUSTOM			:= $(if $(VERSION),1,0)
 
 # --- Build Matrix Parameters ---
 FAMILY		   ?= ce
@@ -96,6 +96,9 @@ ifeq ($(FAMILY),nw)
     IMAGE_REPO  := asusnw
     DOCKER_FILE := ./docker/Dockerfile
 endif
+
+LITE_FROM_BASE    := $(if $(filter 0,$(IS_CUSTOM)),dpanel/dpanel:beta-lite,dpanel/dpanel:lite)
+PROD_FROM_BASE    := $(if $(filter 0,$(IS_CUSTOM)),dpanel/dpanel:beta,dpanel/dpanel:latest)
 
 # --- Core Build Macros ---
 # Logical Fix: If PROJECT_NAME is overridden from command line, use it directly.
@@ -196,39 +199,49 @@ build:
 	$(if $(strip $(D_PLAT_LIST)),,$(call go_build,$(OS),amd64,,$(AMD64_CC),amd64))
 
 build-js:
-	@echo ">> Building frontend assets..."
-	@rm -f ${GO_SOURCE_DIR}/asset/static/*.js ${GO_SOURCE_DIR}/asset/static/*.css ${GO_SOURCE_DIR}/asset/static/index.html ${GO_SOURCE_DIR}/asset/static/*.gz
-	@cd ${JS_SOURCE_DIR} && npm run build && cp -r ${JS_SOURCE_DIR}/dist/* ${GO_SOURCE_DIR}/asset/static
-	@echo ">> Pruning redundant original files to reduce Go binary size..."
+	@echo ">> [Docker] Building frontend assets from ${JS_SOURCE_DIR}..."
+	@rm -f ${GO_SOURCE_DIR}/asset/static/*.js \
+			${GO_SOURCE_DIR}/asset/static/*.css \
+			${GO_SOURCE_DIR}/asset/static/index.html \
+			${GO_SOURCE_DIR}/asset/static/*.gz
+	docker build --output type=tar,dest=- --build-arg HTTP_PROXY=${HTTP_PROXY} "${JS_SOURCE_DIR}" | tar -x -m -C "${GO_SOURCE_DIR}/asset/static"
+	@echo ">> Pruning redundant original files..."
 	@find ${GO_SOURCE_DIR}/asset/static -type f -name "*.gz" | while read gz_file; do rm -f "$${gz_file%.gz}"; done
 
-release: build
+release:
 	@echo ">> Using Dockerfile: $(DOCKER_FILE)"
 	@echo ">> Platforms: $(D_PLATFORMS)"
-	@docker buildx use dpanel-builder
 
 	@echo ">> Building [Lite] edition..."
-	docker buildx build --target lite \
-	   $(call get_tags,beta-lite) \
-	   --platform $(D_PLATFORMS) \
-	   --build-arg APP_VERSION=${APP_VER} \
-	   --build-arg APP_FAMILY=${FAMILY} \
-	   --build-arg APP_LIBC=${LIBC} \
-	   --build-arg HTTP_PROXY=${HTTP_PROXY} \
-       --build-arg HTTPS_PROXY=${HTTP_PROXY} \
-	   -f $(DOCKER_FILE) . --push
+	docker buildx build --builder dpanel-context-local-builder --target lite \
+		$(call get_tags,beta-lite) \
+		--platform $(D_PLATFORMS) \
+		--build-arg APP_VERSION=${APP_VER} \
+		--build-arg APP_FAMILY=${FAMILY} \
+		--build-arg APP_LIBC=${LIBC} \
+		--build-arg HTTP_PROXY=${HTTP_PROXY} \
+		--build-arg HTTPS_PROXY=${HTTP_PROXY} \
+		--secret id=GIT_TOKEN,env=GIT_TOKEN \
+		--secret id=GARBLE_SEED,env=GARBLE_SEED \
+		--build-arg LITE_FROM_BASE=${LITE_FROM_BASE} \
+        --build-arg PROD_FROM_BASE=${PROD_FROM_BASE} \
+		-f $(DOCKER_FILE) . --push
 
 	if [ "$(LITE)" = "0" ]; then \
 	   echo ">> Building [Production] edition..."; \
-	   docker buildx build --target production \
-		 $(call get_tags,beta) \
-		 --platform $(D_PLATFORMS) \
-		 --build-arg APP_VERSION=${APP_VER} \
-		 --build-arg APP_FAMILY=${FAMILY} \
-		 --build-arg APP_LIBC=${LIBC} \
-		 --build-arg HTTP_PROXY=${HTTP_PROXY} \
-         --build-arg HTTPS_PROXY=${HTTP_PROXY} \
-		 -f $(DOCKER_FILE) . --push; \
+	   docker buildx build --builder dpanel-context-local-builder --target production \
+		$(call get_tags,beta) \
+		--platform $(D_PLATFORMS) \
+		--build-arg APP_VERSION=${APP_VER} \
+		--build-arg APP_FAMILY=${FAMILY} \
+		--build-arg APP_LIBC=${LIBC} \
+		--build-arg HTTP_PROXY=${HTTP_PROXY} \
+		--build-arg HTTPS_PROXY=${HTTP_PROXY} \
+		--secret id=GIT_TOKEN,env=GIT_TOKEN \
+		--secret id=GARBLE_SEED,env=GARBLE_SEED \
+		--build-arg LITE_FROM_BASE=${LITE_FROM_BASE} \
+        --build-arg PROD_FROM_BASE=${PROD_FROM_BASE} \
+		-f $(DOCKER_FILE) . --push; \
 	fi
 	@git checkout -- "${PLUGIN_EXPLORER_IMAGE_DIR}/image-amd64.tar"
 clean:

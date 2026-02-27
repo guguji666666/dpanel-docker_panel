@@ -9,6 +9,7 @@ const (
 )
 
 type DPanelInfo struct {
-	ContainerInfo container.InspectResponse
-	RunIn         string
+	ContainerInfo container.InspectResponse `json:"containerInfo"`
+	RunIn         string                    `json:"runIn"`
+	Proxy         string                    `json:"proxy"`
 }

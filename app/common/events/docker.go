@@ -3,11 +3,13 @@ package events
 import (
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types/network"
+	logic2 "github.com/donknap/dpanel/app/application/logic"
 	"github.com/donknap/dpanel/app/common/logic"
 	"github.com/donknap/dpanel/common/accessor"
 	"github.com/donknap/dpanel/common/entity"
@@ -94,7 +96,12 @@ func (self Docker) Daemon(e event.DockerDaemonPayload) {
 	defer func() {
 		sdk.Close()
 	}()
-	result := &types2.DPanelInfo{}
+	result := logic.Setting{}.GetDPanelInfo()
+	if result.Proxy != "" {
+		_ = os.Setenv("HTTP_PROXY", result.Proxy)
+		_ = os.Setenv("HTTPS_PROXY", result.Proxy)
+		slog.Debug("init dpanel proxy", "url", result.Proxy)
+	}
 	if function.IsRunInDocker() {
 		result.RunIn = types2.DPanelRunInContainer
 	} else {
@@ -115,7 +122,8 @@ func (self Docker) Daemon(e event.DockerDaemonPayload) {
 			result.RunIn = types2.DPanelRunInDockerDesktop
 		}
 		// 面板信息总是从默认环境中获取
-		if info, err := sdk.Client.ContainerInspect(sdk.Ctx, facade.GetConfig().GetString("app.name")); err == nil {
+		dpanelContainerName := facade.GetConfig().GetString("app.name")
+		if info, err := sdk.Client.ContainerInspect(sdk.Ctx, dpanelContainerName); err == nil {
 			info.ExecIDs = make([]string, 0)
 			result.ContainerInfo = info
 
@@ -128,6 +136,10 @@ func (self Docker) Daemon(e event.DockerDaemonPayload) {
 				})
 				var nginxErr error
 				if facade.GetConfig().Get("app.env") == define.PanelAppEnvStandard {
+					err = logic2.Site{}.MakeNginxResolver()
+					if err != nil {
+						slog.Debug("init nginx make resolver", "error", err)
+					}
 					if b, _ := local.QuickCheckRunning("nginx"); b {
 						_, nginxErr = local.QuickRun("nginx -s reload")
 					} else {
@@ -153,7 +165,7 @@ func (self Docker) Daemon(e event.DockerDaemonPayload) {
 			GroupName: logic.SettingGroupSetting,
 			Name:      logic.SettingGroupSettingDPanelInfo,
 			Value: &accessor.SettingValueOption{
-				DPanelInfo: result,
+				DPanelInfo: &result,
 			},
 		})
 		logic.Env{}.UpdateEnv(e.DockerEnv)

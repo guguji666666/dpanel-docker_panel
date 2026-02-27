@@ -29,13 +29,15 @@ func (provider *Provider) Register(httpServer *httpserver.Server) {
 			cors.POST("/app/site-domain/delete", controller.SiteDomain{}.Delete)
 			cors.POST("/app/site-domain/get-list", controller.SiteDomain{}.GetList)
 			cors.POST("/app/site-domain/get-detail", controller.SiteDomain{}.GetDetail)
-			cors.POST("/app/site-domain/restart-nginx", controller.SiteDomain{}.RestartNginx)
+			cors.POST("/app/site-domain/nginx-restart", controller.SiteDomain{}.NginxRestart)
+			cors.POST("/app/site-domain/nginx-log", controller.SiteDomain{}.NginxLog)
 			cors.POST("/app/site-domain/update-vhost", controller.SiteDomain{}.UpdateVhost)
 
 			cors.POST("/app/site-cert/apply", controller.SiteCert{}.Apply)
 			cors.POST("/app/site-cert/get-list", controller.SiteCert{}.GetList)
 			cors.POST("/app/site-cert/dns-api", controller.SiteCert{}.DnsApi)
 			cors.POST("/app/site-cert/delete", controller.SiteCert{}.Delete)
+			cors.POST("/app/site-cert/get-detail", controller.SiteCert{}.GetDetail)
 			cors.POST("/app/site-cert/import", controller.SiteCert{}.Import)
 			cors.POST("/app/site-cert/download", controller.SiteCert{}.Download)
 
@@ -47,7 +49,7 @@ func (provider *Provider) Register(httpServer *httpserver.Server) {
 			cors.POST("/app/container/upgrade", controller.Container{}.Upgrade)
 			cors.POST("/app/container/prune", controller.Container{}.Prune)
 			cors.POST("/app/container/delete", controller.Container{}.Delete)
-			cors.GET("/app/container/export", controller.Container{}.Export)
+			cors.POST("/app/container/export", controller.Container{}.Export)
 			cors.POST("/app/container/commit", controller.Container{}.Commit)
 			cors.POST("/app/container/copy", controller.Container{}.Copy)
 			cors.POST("/app/container/ignore", controller.Container{}.Ignore)
@@ -70,7 +72,6 @@ func (provider *Provider) Register(httpServer *httpserver.Server) {
 			cors.POST("/app/image/delete", controller.Image{}.Delete)
 			cors.POST("/app/image/prune", controller.Image{}.Prune)
 			cors.POST("/app/image/export", controller.Image{}.Export)
-			cors.GET("/app/image/export", controller.Image{}.Export)
 			cors.POST("/app/image/check-upgrade", controller.Image{}.CheckUpgrade)
 
 			cors.POST("/app/image/tag-sync", controller.Image{}.TagSync)
@@ -84,6 +85,7 @@ func (provider *Provider) Register(httpServer *httpserver.Server) {
 			cors.POST("/app/image-build/get-detail", controller.ImageBuild{}.GetDetail)
 			cors.POST("/app/image-build/delete", controller.ImageBuild{}.Delete)
 			cors.POST("/app/image-build/prune", controller.ImageBuild{}.Prune)
+			cors.POST("/app/image-build/buildx", controller.ImageBuild{}.Buildx)
 
 			// 文件相关
 			cors.POST("/app/explorer/export", controller.Explorer{}.Export)
