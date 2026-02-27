@@ -281,6 +281,7 @@ func (self Container) Copy(http *gin.Context) {
 		Md5              string `json:"md5" binding:"required"`
 		CopyName         string `json:"copyName" binding:"required"`
 		EnableRandomPort bool   `json:"enableRandomPort"`
+		EnableStart      bool   `json:"enableStart"`
 	}
 	params := ParamsValidate{}
 	if !self.Validate(http, &params) {
@@ -291,10 +292,16 @@ func (self Container) Copy(http *gin.Context) {
 		self.JsonResponseWithError(http, err, 500)
 		return
 	}
+	// 获取一个镜像 tag 是否存在，如果不存在则改用镜像 hash
+	if _, err := docker.Sdk.Client.ImageInspect(docker.Sdk.Ctx, containerInfo.Config.Image); err != nil {
+		containerInfo.Config.Image = containerInfo.Image
+	}
+
 	if _, err := docker.Sdk.Client.ContainerInspect(docker.Sdk.Ctx, params.CopyName); err == nil {
 		self.JsonResponseWithError(http, function.ErrorMessage(define.ErrorMessageCommonIdAlreadyExists, "name", params.CopyName), 500)
 		return
 	}
+
 	if params.EnableRandomPort && !function.IsEmptyMap(containerInfo.HostConfig.PortBindings) {
 		for destPort, bindings := range containerInfo.HostConfig.PortBindings {
 			if function.IsEmptyArray(bindings) {
@@ -312,7 +319,14 @@ func (self Container) Copy(http *gin.Context) {
 		self.JsonResponseWithError(http, err, 500)
 		return
 	}
-	_ = docker.Sdk.Client.ContainerStart(docker.Sdk.Ctx, params.CopyName, container.StartOptions{})
+
+	if params.EnableStart {
+		err = docker.Sdk.Client.ContainerStart(docker.Sdk.Ctx, params.CopyName, container.StartOptions{})
+		if err != nil {
+			self.JsonResponseWithError(http, err, 500)
+			return
+		}
+	}
 
 	self.JsonResponseWithoutError(http, gin.H{
 		"containerId": out.ID,
