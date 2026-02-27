@@ -98,7 +98,7 @@ func (self Client) ImageInspectFileList(ctx context.Context, imageID string) (pa
 }
 
 func (self Client) ImageLoadFromOci(ctx context.Context, ociPath string, imageName string) error {
-	tarPath := filepath.Join(filepath.Dir(ociPath), function.GetMd5(ociPath)+".tar")
+	tarPath := filepath.Join(filepath.Dir(ociPath), function.Md5(ociPath)+".tar")
 	defer os.Remove(tarPath)
 	err := ExtractCurPlatformImageTarFromOci(ctx, ociPath, tarPath, imageName)
 	if err != nil {
