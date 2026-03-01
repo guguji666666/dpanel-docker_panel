@@ -15,10 +15,15 @@ COPY ./ /src
 
 RUN --mount=type=cache,target=/root/.cache/go-build,id=dpanel_go_build_${TARGETARCH} \
     --mount=type=cache,target=/go/pkg/mod,id=dpanel_mod_cache_${TARGETARCH} \
+    export HTTP_PROXY=${HTTP_PROXY} && \
+    export HTTPS_PROXY=${HTTP_PROXY} && \
+    COMMON_ARGS="VERSION=${APP_VERSION} FAMILY=${APP_FAMILY} OS=linux" && \
     if [ "$TARGETARCH" = "amd64" ]; then \
-        export HTTP_PROXY=${HTTP_PROXY} HTTPS_PROXY=${HTTP_PROXY} && make build VERSION=${APP_VERSION} FAMILY=${APP_FAMILY} OS=linux AMD64=1 AMD64_CC=gcc; \
+        make build ${COMMON_ARGS} AMD64=1 AMD64_CC=gcc; \
     elif [ "$TARGETARCH" = "arm64" ]; then \
-        export HTTP_PROXY=${HTTP_PROXY} HTTPS_PROXY=${HTTP_PROXY} && make build VERSION=${APP_VERSION} FAMILY=${APP_FAMILY} OS=linux ARM64=1 ARM64_CC=gcc; \
+        make build ${COMMON_ARGS} ARM64=1 ARM64_CC=gcc; \
+    elif [ "$TARGETARCH" = "armv7" ]; then \
+        make build ${COMMON_ARGS} ARM7=1 ARM7_CC=gcc; \
     else \
         echo "Unsupported architecture: $TARGETARCH" && exit 1; \
     fi
